@@ -1,0 +1,7 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python corvi_bot.py"
+restartPolicyType = "always"
+restartPolicyMaxRetries = 5
