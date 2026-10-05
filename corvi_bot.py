@@ -26,7 +26,7 @@ DISCORD_TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 
 # Bot behavior settings
-MAX_HISTORY = 80  # Messages to keep per channel (40 pairs)
+MAX_HISTORY = 80  # Recent messages sent to Claude; the file keeps the full history.
 MODEL = 'claude-sonnet-4-6'
 MAX_TOKENS = 400  # Corvi keeps it SHORT. He's 14cm.
 
@@ -39,6 +39,7 @@ ARDEN_USER_ID = 730173882153173163
 # Railway mounts persistent storage at this path when a volume is attached.
 # Local runs continue to use the history file beside this script.
 HISTORY_FILE = Path(os.getenv('RAILWAY_VOLUME_MOUNT_PATH') or Path(__file__).parent) / 'conversation_history.json'
+LEGACY_HISTORY_FILE = HISTORY_FILE.with_name('conversation_history.local-archive.json')
 
 # ══════════════════════════════════════════════
 # BOT SETUP
@@ -80,6 +81,36 @@ def load_history():
         print(f"No history file found — starting fresh")
         conversation_history = {}
 
+    # Import the older local archive once, keeping messages received on Railway
+    # after that archive was saved. The imported file remains as a backup.
+    if LEGACY_HISTORY_FILE.exists():
+        try:
+            with open(LEGACY_HISTORY_FILE, 'r', encoding='utf-8') as f:
+                legacy_history = json.load(f)
+            if not isinstance(legacy_history, dict) or not all(
+                isinstance(entries, list) for entries in legacy_history.values()
+            ):
+                raise ValueError('Invalid history archive')
+            merged = dict(legacy_history)
+            for channel_id, current in conversation_history.items():
+                older = merged.get(channel_id, [])
+                if current[:len(older)] == older:
+                    merged[channel_id] = current
+                    continue
+                overlap = min(len(older), len(current))
+                while overlap and older[-overlap:] != current[:overlap]:
+                    overlap -= 1
+                merged[channel_id] = older + current[overlap:]
+            conversation_history = merged
+            if save_history():
+                os.replace(
+                    LEGACY_HISTORY_FILE,
+                    LEGACY_HISTORY_FILE.with_name('conversation_history.local-archive.imported.json')
+                )
+                print(f"Imported older history for {len(legacy_history)} channels")
+        except (json.JSONDecodeError, OSError, ValueError) as e:
+            print(f"Could not import older history: {e}")
+
 
 def save_history():
     """Save conversation history to local JSON file."""
@@ -89,8 +120,10 @@ def save_history():
         with open(pending_file, 'w', encoding='utf-8') as f:
             json.dump(conversation_history, f, indent=2, ensure_ascii=False)
         os.replace(pending_file, HISTORY_FILE)
+        return True
     except IOError as e:
         print(f"Error saving history file: {e}")
+        return False
 
 
 # ══════════════════════════════════════════════
@@ -187,7 +220,7 @@ async def build_messages(channel_id, new_content):
 
     # Get conversation history for this channel
     history = conversation_history.get(str(channel_id), [])
-    messages.extend(history)
+    messages.extend(history[-(MAX_HISTORY - 1):])
 
     # Add the new message
     messages.append({"role": "user", "content": new_content})
@@ -294,12 +327,8 @@ async def on_message(message):
     else:
         conversation_history[channel_id].append({"role": "user", "content": contextualized_content})
 
-    # Trim history
-    if len(conversation_history[channel_id]) > MAX_HISTORY:
-        conversation_history[channel_id] = conversation_history[channel_id][-MAX_HISTORY:]
-
-    # Build the full messages array
-    api_messages = conversation_history[channel_id][:-1]
+    # Keep the full history on disk, but bound each API request.
+    api_messages = conversation_history[channel_id][-MAX_HISTORY:-1]
     if isinstance(message_content, list):
         api_messages.append({"role": "user", "content": message_content})
     else:
@@ -448,15 +477,12 @@ async def judge(ctx, *, text: str = None):
         judge_prompt = f"[{username}]: *presents something for Corvi's judgment* {text}"
         conversation_history[channel_id].append({"role": "user", "content": judge_prompt})
 
-        if len(conversation_history[channel_id]) > MAX_HISTORY:
-            conversation_history[channel_id] = conversation_history[channel_id][-MAX_HISTORY:]
-
         async with ctx.channel.typing():
             try:
                 system = await build_system_prompt()
                 system += "\n\n[The user is specifically requesting a judgment with a disappointment rating on a scale of 1-10. Deliver your verdict with prophetic gravity.]"
 
-                api_messages = conversation_history[channel_id]
+                api_messages = conversation_history[channel_id][-MAX_HISTORY:]
 
                 response = client.messages.create(
                     model=MODEL,
