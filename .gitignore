@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 *.pyo
 conversation_history.json
+conversation_history.*.json
+conversation_history.json.tmp
 .venv/
 venv/
 *.egg-info/

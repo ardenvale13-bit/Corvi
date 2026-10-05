@@ -36,8 +36,9 @@ ALLOWED_CHANNELS = []
 # Arden's Discord user ID
 ARDEN_USER_ID = 730173882153173163
 
-# Path for conversation history JSON
-HISTORY_FILE = Path(__file__).parent / 'conversation_history.json'
+# Railway mounts persistent storage at this path when a volume is attached.
+# Local runs continue to use the history file beside this script.
+HISTORY_FILE = Path(os.getenv('RAILWAY_VOLUME_MOUNT_PATH') or Path(__file__).parent) / 'conversation_history.json'
 
 # ══════════════════════════════════════════════
 # BOT SETUP
@@ -83,8 +84,11 @@ def load_history():
 def save_history():
     """Save conversation history to local JSON file."""
     try:
-        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+        HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        pending_file = HISTORY_FILE.with_suffix('.json.tmp')
+        with open(pending_file, 'w', encoding='utf-8') as f:
             json.dump(conversation_history, f, indent=2, ensure_ascii=False)
+        os.replace(pending_file, HISTORY_FILE)
     except IOError as e:
         print(f"Error saving history file: {e}")
 
